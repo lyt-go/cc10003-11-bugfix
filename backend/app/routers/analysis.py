@@ -1,4 +1,4 @@
-"""分析方案接口：维护分析方案，覆盖提交方案评审、启用方案、归档方案等动作。"""
+"""分析方案接口：维护分析方案，覆盖提交方案评审、启用方案、生成显著性结论、归档方案等动作。"""
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/analysis", tags=["分析方案"])
 
 service = AnalysisService()
 
-LIST_FIELDS = ["方案编号", "分析主题", "数据集范围", "分析方法", "对比基准", "显著性阈值", "输出图表类型", "调度周期"]
+LIST_FIELDS = ["方案编号", "分析主题", "数据集范围", "分析方法", "对比基准", "显著性阈值", "输出图表类型", "调度周期", "核心指标", "结论版本", "显著性结论"]
 STATUSES = ["草稿", "方案评审中", "已启用", "已归档"]
 
 
@@ -30,13 +30,20 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出分析方案清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "analysis", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
-    """读取单条分析方案明细；不存在时给出可读的错误说明。"""
-    entry = service.get_entry(entry_id)
-    if entry is None:
+    """读取单条分析方案明细：含共享结论与关联实验，和实验列表是同一份版本。"""
+    detail = service.get_detail(entry_id)
+    if detail is None:
         raise HTTPException(status_code=404, detail=f"分析方案 {entry_id} 不存在或已归档")
-    return entry
+    return detail
 
 
 @router.post("", response_model=ActionResult)
@@ -50,16 +57,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条分析方案执行提交方案评审、启用方案、归档方案；不允许的动作会被拦下并说明原因。"""
+    """对单条分析方案执行动作；重复启用、重复生成结论只生效一次。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
-    if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出分析方案清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "analysis", "total": total, "items": items}
+    outcome = service.run_action(entry_id, action, payload.values)
+    return ActionResult(ok=outcome.ok, message=outcome.message, entry=outcome.entry)

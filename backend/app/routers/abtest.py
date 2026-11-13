@@ -1,4 +1,4 @@
-"""实验设计接口：维护实验方案，覆盖提交方案评审、启动实验、结项实验等动作。"""
+"""实验设计接口：维护实验方案，覆盖提交方案评审、启动实验、结项实验、取消实验等动作。"""
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/abtest", tags=["实验设计"])
 
 service = AbtestService()
 
-LIST_FIELDS = ["方案编号", "实验名称", "对照组定义", "实验组定义", "分流比例", "核心指标", "最小样本量", "预计周期"]
+LIST_FIELDS = ["方案编号", "实验名称", "对照组定义", "实验组定义", "分流比例", "核心指标", "最小样本量", "当前样本量", "预计周期", "绑定分析方案", "结论版本"]
 STATUSES = ["草稿", "方案评审中", "实验中", "已结项", "已取消"]
 
 
@@ -30,13 +30,36 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出实验设计清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "abtest", "total": total, "items": items}
+
+
+@router.get("/closures")
+def list_closures() -> dict[str, Any]:
+    """结项记录清单：只增不改，历史结项可追溯到当时冻结的阈值与版本。"""
+    items = service.list_closures()
+    return {"module": "abtest_closure", "total": len(items), "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
-    """读取单条实验方案明细；不存在时给出可读的错误说明。"""
-    entry = service.get_entry(entry_id)
-    if entry is None:
+    """读取单条实验方案明细：含结项门禁预检与结项记录，与列表是同一份数据。"""
+    detail = service.get_detail(entry_id)
+    if detail is None:
         raise HTTPException(status_code=404, detail=f"实验方案 {entry_id} 不存在或已归档")
-    return entry
+    return detail
+
+
+@router.get("/{entry_id}/closures")
+def list_entry_closures(entry_id: int) -> dict[str, Any]:
+    """单条实验的结项记录；不存在时给出可读的错误说明。"""
+    if service.get_entry(entry_id) is None:
+        raise HTTPException(status_code=404, detail=f"实验方案 {entry_id} 不存在或已归档")
+    items = service.list_closures(entry_id)
+    return {"module": "abtest_closure", "total": len(items), "items": items}
 
 
 @router.post("", response_model=ActionResult)
@@ -50,16 +73,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条实验方案执行提交方案评审、启动实验、结项实验；不允许的动作会被拦下并说明原因。"""
+    """对单条实验方案执行动作；门禁不通过时保持「实验中」并逐项说明缺口。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
-    if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出实验设计清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "abtest", "total": total, "items": items}
+    outcome = service.run_action(entry_id, action, payload.values)
+    return ActionResult(ok=outcome.ok, message=outcome.message, entry=outcome.entry)
